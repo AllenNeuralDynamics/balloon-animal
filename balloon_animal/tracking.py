@@ -2,8 +2,8 @@
 Code for stages of tracking pipeline.
 """
 
-from base import (SchedulerInput,
-                  TrackBalloonInput, 
+from balloon_animal.base import (SchedulerInput,
+                  TrackBalloonInput,
                   BalloonSequence)
 
 def schedule_tracking(

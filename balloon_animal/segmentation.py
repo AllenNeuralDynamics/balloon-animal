@@ -2,7 +2,7 @@
 Code for stages of segmentation pipeline.
 """
 
-from base import OmDetInput, SAM2Input
+from balloon_animal.base import OmDetInput, SAM2Input, SchedulerInput
 
 def run_omdet(
     src: OmDetInput
