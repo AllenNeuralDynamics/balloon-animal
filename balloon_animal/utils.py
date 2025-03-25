@@ -109,6 +109,7 @@ def sample_ellipsoid_union_surface(
     """
     Samples surface of ellipsoid union with rejection sampling.
     Returns dictionary mapping gaussian id to buffer of 3D points.
+    Uses uniform spherical coordinate sampling for better distribution.
 
     Args:
         means: Array of mean positions with shape (N, 3)
@@ -160,13 +161,25 @@ def sample_ellipsoid_union_surface(
 
         # Collect true surface points
         num_collected = 0
-        num_target = samples_per_ellipsoid[i]
-        batch_size = 1000
+        num_target = int(samples_per_ellipsoid[i])
+        batch_size = 10000
+
+        print(f'Sampling points for ellipsoid {i}')
+        print(f"{num_target=}")
+
         while num_collected < num_target:
-            # Sample unit sphere
+            # Sample unit sphere uniformly using spherical coordinates
+            # phi: (0 to 2π)
+            # theta: (0 to π)
             rng = np.random.RandomState(42)
-            xyz = rng.normal(0, 1, size=(batch_size, 3))
-            xyz = xyz / np.linalg.norm(xyz, axis=1, keepdims=True)
+            phi = rng.uniform(0, 2 * np.pi, batch_size)
+            theta = np.arccos(rng.uniform(-1.0, 1.0, batch_size))
+
+            # Convert spherical to Cartesian coordinates
+            x = np.sin(theta) * np.cos(phi)
+            y = np.sin(theta) * np.sin(phi)
+            z = np.cos(theta)
+            xyz = np.column_stack((x, y, z))
 
             # Apply gaussian/ellipsoid basis
             # Ref: (G @ xyz.T).T = xyzw @ G.T
@@ -189,6 +202,7 @@ def sample_ellipsoid_union_surface(
             # These samples passed inner loop check
             valid_candidates = candidates[valid_mask]
             if len(valid_candidates) > 0:
+                print(f'entered, {len(valid_candidates)=}')
                 # Add diff/fill target container up to the top
                 to_add = min(len(valid_candidates), num_target - num_collected)
                 surface_union_samples[i].extend(valid_candidates[:to_add])
