@@ -1,28 +1,30 @@
-import numpy as np
-from numpy.typing import NDArray
+import torch
+from torch import Tensor
 
 def count_non_nans(
-    tracks: NDArray[np.float64],
-    gt_trajectories: NDArray[np.float64]
+    tracks: Tensor,
+    gt_trajectories: Tensor
 ) -> int:
     """
     Args:
-        tracks: Array of track positions with shape (M, N, 3)
-        gt_trajectories: Array of ground truth positions with shape (M, N, 3)
+        tracks: Tensor of track positions with shape (M, N, 3)
+        gt_trajectories: Tensor of ground truth positions with shape (M, N, 3)
+
     Returns:
         Total number of valid (track point, keypoint) pairs.
     """
-    valid_mask = ~(np.isnan(tracks).any(axis=-1) | np.isnan(gt_trajectories).any(axis=-1))
-    return int(np.sum(valid_mask))
+    valid_mask = ~(torch.isnan(tracks).any(dim=-1) | torch.isnan(gt_trajectories).any(dim=-1))
+    return int(torch.sum(valid_mask).item())
 
 def measure_track_L2_loss(
-    tracks: NDArray[np.float64],
-    gt_trajectories: NDArray[np.float64]
+    tracks: Tensor,
+    gt_trajectories: Tensor
 ) -> float:
     """
     Args:
-        tracks: Array of track positions with shape (M, N, 3)
-        gt_trajectories: Array of ground truth positions with shape (M, N, 3)
+        tracks: Tensor of track positions with shape (M, N, 3)
+        gt_trajectories: Tensor of ground truth positions with shape (M, N, 3)
+
     Returns:
         Total L2 loss between track and ground truth trajectory.
     """
@@ -31,22 +33,23 @@ def measure_track_L2_loss(
     assert len(tracks.shape) == 3, \
         "Tracks must have shape (M, N, 3)."
 
-    squared_diffs = np.nansum((tracks - gt_trajectories) ** 2, axis=2)
-    point_distances = np.sqrt(squared_diffs)
-    cum_sum = np.sum(point_distances)
+    squared_diffs = torch.nansum((tracks - gt_trajectories) ** 2, dim=2)
+    point_distances = torch.sqrt(squared_diffs)
+    cum_sum = torch.sum(point_distances)
     valid_cnt = count_non_nans(tracks, gt_trajectories)
-    l2_loss = float(cum_sum / valid_cnt)
+    l2_loss = float(cum_sum.item() / valid_cnt)
 
     return float(l2_loss)
 
 def measure_track_L2_variance(
-    tracks: NDArray[np.float64],
-    gt_trajectories: NDArray[np.float64]
+    tracks: Tensor,
+    gt_trajectories: Tensor
 ) -> float:
     """
     Args:
-        track: Array of track positions with shape (M, N, 3)
-        gt_trajectory: Array of ground truth positions with shape (M, N, 3)
+        track: Tensor of track positions with shape (M, N, 3)
+        gt_trajectory: Tensor of ground truth positions with shape (M, N, 3)
+
     Returns:
         Total Variance between track and ground truth trajectory.
     """
@@ -57,8 +60,8 @@ def measure_track_L2_variance(
 
     # Ref: var = mean(abs(x - x.mean())**2)
     mean_loss = measure_track_L2_loss(tracks, gt_trajectories)
-    squared_diffs = np.nansum((tracks - gt_trajectories) ** 2, axis=2)
-    per_point_loss = np.sqrt(squared_diffs)
+    squared_diffs = torch.nansum((tracks - gt_trajectories) ** 2, dim=2)
+    per_point_loss = torch.sqrt(squared_diffs)
+    variance = torch.mean(torch.abs(per_point_loss - mean_loss)**2)
 
-    variance = np.mean(np.abs(per_point_loss - mean_loss)**2)
-    return float(variance)
+    return float(variance.item())
