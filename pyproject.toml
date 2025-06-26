@@ -14,7 +14,14 @@ authors = [
 dependencies = [
     "numpy>=1.20.0",
     "rerun-sdk>=0.10.0",
-    "torch"
+    "h5py",
+    "huggingface-hub",
+    "transformers",
+    "opencv-python", 
+    "plotly",
+    "einops",
+    "tensorflow",
+    "accelerate"
 ]
 
 [project.optional-dependencies]
