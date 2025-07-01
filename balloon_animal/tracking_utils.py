@@ -1,60 +1,132 @@
 """
-Variety of utilities.
+Personal Utilities for 3DGS Tracking
 """
-from collections import defaultdict
-from typing import TypeVar, Dict
 import torch
 from torch import Tensor
 
-T = TypeVar('T')
-N = TypeVar('N')
-
-def quaternions_to_rotation_matrices(q: Tensor) -> Tensor:
+def sample_points_in_sphere(N, r=1.0, seed=42, device='cuda'):
     """
-    Convert batch of unnormalized quaternions [r, x, y, z]
-    into batch of rotation matrices.
+    Uniformly samples N points inside a sphere of radius r, natively on GPU.
 
-    Args:
-        q: Tensor of quaternions with shape (N, 4)
+    Parameters:
+    N (int): Number of points to sample.
+    r (float): Radius of the sphere.
+    seed (int or None): Optional seed for reproducibility.
+    device (str or torch.device): Device to sample on (default: 'cuda').
 
     Returns:
-        Tensor of rotation matrices with shape (N, 3, 3)
+    torch.Tensor: Tensor of shape (N, 3) with sampled 3D points on specified device.
     """
-    # Validate input shape
-    if q.dim() != 2 or q.shape[1] != 4:
-        raise ValueError(f"Expected quaternions with shape (N, 4), got {q.shape}")
+    if seed is not None:
+        torch.manual_seed(seed)
 
-    # Normalize quaternions
-    norm = torch.sqrt(q[:, 0]**2 + q[:, 1]**2 + q[:, 2]**2 + q[:, 3]**2)
-    q = q / norm.unsqueeze(1)
+    # Sample points from normal distribution and normalize to unit sphere
+    directions = torch.randn(N, 3, device=device)
+    directions /= torch.norm(directions, dim=1, keepdim=True)
 
-    # Initialize rotation matrix tensor
-    rot = torch.zeros((q.shape[0], 3, 3), device=q.device, dtype=q.dtype)
+    # Sample radius with cube root to ensure uniform volume distribution
+    radii = torch.rand(N, device=device) ** (1/3)
+    radii *= r
 
-    # Extract quaternion components
-    r = q[:, 0]
-    x = q[:, 1]
-    y = q[:, 2]
-    z = q[:, 3]
+    # Scale directions by radii
+    points = directions * radii.unsqueeze(1)
 
-    # Fill rotation matrix
-    rot[:, 0, 0] = 1 - 2 * (y * y + z * z)
-    rot[:, 0, 1] = 2 * (x * y - r * z)
-    rot[:, 0, 2] = 2 * (x * z + r * y)
-    rot[:, 1, 0] = 2 * (x * y + r * z)
-    rot[:, 1, 1] = 1 - 2 * (x * x + z * z)
-    rot[:, 1, 2] = 2 * (y * z - r * x)
-    rot[:, 2, 0] = 2 * (x * z - r * y)
-    rot[:, 2, 1] = 2 * (y * z + r * x)
-    rot[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return points
 
-    return rot
+def sample_ellipsoid_surfaces(means, semi_axes, num_samples):
+    """
+    Sample surface points from a union of axis-aligned ellipsoids (no intersection check).
+    Args:
+        means: (N, 3) tensor of ellipsoid centers
+        semi_axes: (N, 3) tensor of semi-axes (a, b, c)
+        num_samples: total number of surface samples to generate
+    Returns:
+        (num_samples, 3) tensor of sampled 3D points
+    """
+    # Ensure inputs are PyTorch tensors
+    means = torch.as_tensor(means)
+    semi_axes = torch.as_tensor(semi_axes)
+
+    # Get device and dtype from input tensors
+    device = means.device
+    dtype = means.dtype
+
+    # Estimate surface area using Knud Thomsen's approximation
+    a, b, c = semi_axes.T
+    p = 1.6075
+    areas = 4 * torch.pi * ((a**p * b**p + a**p * c**p + b**p * c**p) / 3)**(1/p)
+    weights = areas / areas.sum()
+
+    # Allocate samples proportionally
+    samples_per_ellipsoid = torch.floor(weights * num_samples).long()
+    remainder = num_samples - samples_per_ellipsoid.sum()
+
+    # Fill remainder by adding to ellipsoids with largest weights
+    _, indices = torch.sort(weights, descending=True)
+    samples_per_ellipsoid[indices[:remainder]] += 1
+
+    # Sample each ellipsoid
+    all_samples = []
+    for mean, axes, n_samples in zip(means, semi_axes, samples_per_ellipsoid):
+        # Create random tensors on the same device
+        phi = torch.rand(n_samples, device=device, dtype=dtype) * 2 * torch.pi
+        costheta = torch.rand(n_samples, device=device, dtype=dtype) * 2 - 1  # Uniform between -1 and 1
+        sintheta = torch.sqrt(1 - costheta**2)
+
+        # Unit sphere to ellipsoid surface
+        directions = torch.stack([
+            sintheta * torch.cos(phi),
+            sintheta * torch.sin(phi),
+            costheta
+        ], dim=1)
+
+        points = directions * axes + mean
+        all_samples.append(points)
+
+    return torch.cat(all_samples, dim=0)
+
+def calc_ellipsoid_union_sdf(
+    query_points: torch.Tensor,
+    ellipsoid_centers: torch.Tensor,
+    ellipsoid_scales: torch.Tensor
+) -> tuple:
+    """
+    Calculates ellipsoid union sdf.
+
+    Args:
+        query_points (torch.Tensor): (N, 3) xyz queries.
+        ellipsoid_centers (torch.Tensor): (M, 3) xyz centers.
+        ellipsoid_scales (torch.Tensor): (M, 3) xyz scales.
+    Ellipsoid centers + ellipsoid scales having corresponding indices.
+    Assuming the ellipsoids have no rotation.
+
+    Returns:
+        torch.Tensor: SDF of query points.
+        -: inside union, 0: on union surface, +: outside union
+        torch.Tensor: Indices of closest ellipsoid parent.
+    """
+    # Ensure inputs are PyTorch tensors
+    query_points = torch.as_tensor(query_points)
+    ellipsoid_centers = torch.as_tensor(ellipsoid_centers)
+    ellipsoid_scales = torch.as_tensor(ellipsoid_scales)
+
+    # Vectorized implementation for all query points at once
+    # Reshape for broadcasting: (N, 1, 3) - (1, M, 3) = (N, M, 3)
+    normalized_dists = (query_points.unsqueeze(1) - ellipsoid_centers.unsqueeze(0)) / ellipsoid_scales.unsqueeze(0)
+
+    # Compute SDF for each query point to each ellipsoid: (N, M)
+    sdfs = torch.norm(normalized_dists, dim=2) - 1.0
+
+    # Find minimum SDF and corresponding parent index for each query point
+    union_sdf, union_parents = torch.min(sdfs, dim=1)
+
+    return union_sdf, union_parents
 
 def build_homogeneous_matrices(
-    means: Tensor,
-    semi_axes: Tensor,
-    quaternions: Tensor,
-) -> Tensor:
+    means: torch.Tensor,
+    semi_axes: torch.Tensor,
+    quaternions: torch.Tensor,
+) -> torch.Tensor:
     """
     Convert gaussian means, semi_axes, and quaternions into basis frames.
 
@@ -96,124 +168,161 @@ def build_homogeneous_matrices(
 
     return mats
 
-def sample_ellipsoid_union_surface(
-    means: Tensor,
-    semi_axes: Tensor,
-    quaternions: Tensor,
-    num_samples: int
-) -> Dict[int, Tensor]:
+def filter_ellipsoids_by_overlap(
+    ellipsoid_centers: torch.Tensor,
+    ellipsoid_scales: torch.Tensor,
+    overlap_threshold: float = 0.9
+) -> torch.Tensor:
     """
-    Samples surface of ellipsoid union with rejection sampling.
-    Returns dictionary mapping gaussian id to buffer of 3D points.
-    Uses uniform spherical coordinate sampling for better distribution.
+    Filters ellipsoids by progressively growing a keep set.
+    The filtering first sorts input ellipsoids by volume, then
+    iterates through the sorted buffer checking if each candidate
+    ellipsoid actually adds detail to the reconstruction, determined by
+    an overlap threshold.
 
-    Args:
-        means: Tensor of mean positions with shape (N, 3)
-        semi_axes: Tensor of semi-axes with shape (N, 3)
-        quaternions: Tensor of quaternions with shape (N, 4)
-        num_samples: Number of points to sample
+    Input:
+        ellipsoid_centers (torch.Tensor): (N, 3) xyz centers.
+        ellipsoid_scales (torch.Tensor): (N, 3) xyz scales.
+        overlap_threshold (float): Amount of overlap between two ellipsoids that
+            that will trigger filter. Between two overlapping ellipsoids, the
+            smaller ellipsoid in volume is filtered out.
 
     Returns:
-        Dictionary mapping ellipsoid ID to tensor of points with shape (M, 3)
+        torch.Tensor: integer tensor of keep indices.
     """
-    # Validate input shapes
-    if means.dim() != 2 or means.shape[1] != 3:
-        raise ValueError(f"Expected means with shape (N, 3), got {means.shape}")
-    if semi_axes.dim() != 2 or semi_axes.shape[1] != 3:
-        raise ValueError(f"Expected semi_axes with shape (N, 3), got {semi_axes.shape}")
-    if quaternions.dim() != 2 or quaternions.shape[1] != 4:
-        raise ValueError(f"Expected quaternions with shape (N, 4), got {quaternions.shape}")
+    # Ensure inputs are PyTorch tensors
+    ellipsoid_centers = torch.as_tensor(ellipsoid_centers)
+    ellipsoid_scales = torch.as_tensor(ellipsoid_scales)
 
-    # Check that all arrays have the same first dimension
-    N = means.shape[0]
-    if semi_axes.shape[0] != N or quaternions.shape[0] != N:
-        raise ValueError(f"Inconsistent batch sizes: means {means.shape[0]}, "
-                         f"semi_axes {semi_axes.shape[0]}, quaternions {quaternions.shape[0]}")
+    # Sort ellipsoids by volume, descending order
+    volumes = (4/3) * torch.pi * torch.prod(ellipsoid_scales, dim=1)
+    sorted_indices = torch.argsort(volumes, descending=True)
 
-    # Init output buffer, map of ellipsoid id -> samples
-    surface_union_samples = defaultdict(list)
-    device = means.device
+    # Initialize keep_indices with the largest ellipsoid
+    keep_indices = [sorted_indices[0].item()]
 
-    # Calculate samples per ellipsoid based on relative surface area.
-    # Ensures more even distribution of points across union.
-    avg_semi_axes = torch.mean(semi_axes, dim=1)
-    surface_areas = 4 * torch.pi * avg_semi_axes**2
-    total_area = torch.sum(surface_areas)
-    samples_per_ellipsoid = torch.maximum(
-        torch.tensor(1.0, device=device),
-        torch.floor(num_samples * surface_areas / total_area)
-    ).int()
+    # Check each remaining ellipsoid
+    for i in sorted_indices[1:]:
+        i = i.item()
+        # Collect query points
+        query_pts = sample_points_in_sphere(500)
+        query_pts = (query_pts * ellipsoid_scales[i]) + ellipsoid_centers[i]
 
-    remaining = num_samples - torch.sum(samples_per_ellipsoid)
-    if remaining > 0:
-        # Add remaining samples to ellipsoids with largest surface areas
-        _, indices = torch.sort(surface_areas, descending=True)
-        indices = indices[:remaining]
-        samples_per_ellipsoid[indices] += 1
+        # Evaluate query points against current kept ellipsoids
+        sdf, _ = calc_ellipsoid_union_sdf(
+            query_pts,
+            ellipsoid_centers[keep_indices],
+            ellipsoid_scales[keep_indices]
+        )
 
-    # Convert gaussian info into basis frames
-    g_mats = build_homogeneous_matrices(means, semi_axes, quaternions)
+        # Conditionally add to keep_indices based on overlap
+        overlap = torch.sum(sdf < 0).float() / len(query_pts)
+        if overlap < overlap_threshold:
+            keep_indices.append(i)
 
-    # Surface sampling per ellipsoid
-    n_ellipsoids = len(means)
-    for i in range(n_ellipsoids):
-        # Current local basis
-        G = g_mats[i]
+    return torch.tensor(keep_indices, dtype=torch.long)
 
-        # Collect true surface points
-        num_collected = 0
-        num_target = int(samples_per_ellipsoid[i].item())
-        batch_size = 10000
+def sample_ellipsoid_union_surface(
+    ellipsoid_centers: torch.Tensor,
+    ellipsoid_scales: torch.Tensor,
+    num_samples: int = 50000
+) -> dict:
+    """
+    Produces samples of ellipsoid union.
 
-        print(f'Sampling points for ellipsoid {i}')
-        print(f"{num_target=}")
+    Args:
+        ellipsoid_centers (torch.Tensor): (N, 3) xyz centers.
+        ellipsoid_scales (torch.Tensor): (N, 3) xyz scales.
+        num_samples (int): Number of surface samples to generate.
 
-        while num_collected < num_target:
-            # Sample unit sphere uniformly using spherical coordinates
-            # phi: (0 to 2π)
-            # theta: (0 to π)
-            # Set seed for reproducibility
-            generator = torch.Generator(device=device)
-            generator.manual_seed(42)
+    Returns:
+       dict: gaussian_id -> global 3D coordinate tensor.
+    """
+    # Ensure inputs are PyTorch tensors
+    ellipsoid_centers = torch.as_tensor(ellipsoid_centers)
+    ellipsoid_scales = torch.as_tensor(ellipsoid_scales)
 
-            phi = torch.rand(batch_size, device=device, generator=generator) * 2 * torch.pi
-            theta = torch.arccos(2 * torch.rand(batch_size, device=device, generator=generator) - 1)
+    # Sample initial points on ellipsoid surfaces
+    query_points = sample_ellipsoid_surfaces(ellipsoid_centers, ellipsoid_scales, num_samples)
 
-            # Convert spherical to Cartesian coordinates
-            x = torch.sin(theta) * torch.cos(phi)
-            y = torch.sin(theta) * torch.sin(phi)
-            z = torch.cos(theta)
-            xyz = torch.stack((x, y, z), dim=1)
+    # Calculate SDF and parent ellipsoid for each point
+    sdf, parent = calc_ellipsoid_union_sdf(
+        query_points, ellipsoid_centers, ellipsoid_scales
+    )
 
-            # Apply gaussian/ellipsoid basis
-            # Ref: (G @ xyz.T).T = xyzw @ G.T
-            candidates = torch.matmul(xyz, G[:3, :3].T) + G[:3, 3]
+    # Filter points that are approximately on the surface
+    tolerance = 1e-2  # Within 1/100 of the surface
+    surface_filter = torch.abs(sdf) < tolerance
 
-            # Change of basis into ALL other ellipsoids
-            # for intersection check.
-            valid_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
-            for j in range(n_ellipsoids):
-                if i == j:
-                    continue
-                if num_collected >= num_target:
-                    break
+    # Create output map keyed by ellipsoid index
+    output_map = {}
+    for i in range(len(ellipsoid_centers)):
+        parent_filter = (parent == i)
+        full_condition = surface_filter & parent_filter
+        output_map[i] = query_points[full_condition]
 
-                N = torch.inverse(g_mats[j])
-                tmp = torch.matmul(candidates, N[:3, :3].T) + N[:3, 3]
-                inside_mask = torch.sum(tmp**2, dim=1) <= 1
-                valid_mask = valid_mask & ~inside_mask
+    return output_map
 
-            # These samples passed inner loop check
-            valid_candidates = candidates[valid_mask]
-            if len(valid_candidates) > 0:
-                print(f'entered, {len(valid_candidates)=}')
-                # Add diff/fill target container up to the top
-                to_add = min(len(valid_candidates), num_target - num_collected)
-                surface_union_samples[i].append(valid_candidates[:to_add])
-                num_collected += to_add
+def _quaternion_multiply_batch(q1, q2):
+    """
+    Multiply quaternions in batch.
 
-    # Convert lists of tensors to single tensors for each ellipsoid
-    return {k: torch.cat(v, dim=0) for k, v in surface_union_samples.items()}
+    Args:
+        q1 (torch.Tensor): First quaternions, shape (N, 4) in (r, x, y, z) format
+        q2 (torch.Tensor): Second quaternions, shape (N, 4) in (r, x, y, z) format
+
+    Returns:
+        torch.Tensor: Product quaternions, shape (N, 4)
+    """
+    r1, x1, y1, z1 = q1[:, 0], q1[:, 1], q1[:, 2], q1[:, 3]
+    r2, x2, y2, z2 = q2[:, 0], q2[:, 1], q2[:, 2], q2[:, 3]
+
+    # Quaternion multiplication formula
+    r = r1 * r2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = r1 * x2 + x1 * r2 + y1 * z2 - z1 * y2
+    y = r1 * y2 - x1 * z2 + y1 * r2 + z1 * x2
+    z = r1 * z2 + x1 * y2 - y1 * x2 + z1 * r2
+
+    return torch.stack([r, x, y, z], dim=1)
+
+def quaternion_rotate_points(quaternion, points):
+    """
+    Apply quaternion rotation to a buffer of 3D points.
+
+    Args:
+        quaternion (torch.Tensor): Quaternion in (r, x, y, z) format, shape (4,)
+                                 where r is the real/scalar part
+        points (torch.Tensor): Points to rotate, shape (N, 3)
+
+    Returns:
+        torch.Tensor: Rotated points, shape (N, 3)
+    """
+    # Ensure inputs are float tensors
+    quaternion = quaternion.float()
+    points = points.float()
+
+    # Normalize quaternion to unit quaternion
+    quaternion = quaternion / torch.norm(quaternion)
+
+    # Extract quaternion components (r, x, y, z)
+    r, x, y, z = quaternion[0], quaternion[1], quaternion[2], quaternion[3]
+
+    # Convert points to homogeneous quaternions (0, x, y, z)
+    # Shape: (N, 4) where first column is 0
+    point_quats = torch.cat([torch.zeros(points.shape[0], 1, device=points.device), points], dim=1)
+
+    # Quaternion conjugate for q* = (r, -x, -y, -z)
+    q_conj = torch.tensor([r, -x, -y, -z], device=quaternion.device)
+
+    # Apply rotation: q * p * q*
+    # First: q * p
+    rotated = _quaternion_multiply_batch(quaternion.unsqueeze(0).expand(points.shape[0], -1), point_quats)
+
+    # Second: (q * p) * q*
+    rotated = _quaternion_multiply_batch(rotated, q_conj.unsqueeze(0).expand(points.shape[0], -1))
+
+    # Extract the rotated 3D points (ignore the scalar part)
+    return rotated[:, 1:]
 
 def sample_gaussian_tracks(
     means: Tensor,
@@ -292,15 +401,3 @@ def sample_gaussian_tracks(
     # Stack all timesteps
     output_tracks = torch.stack(output_tracks)
     return output_tracks
-
-def log_image():
-    pass
-
-def log_video():
-    pass
-
-def log_gaussian_sequence():
-    pass
-
-def log_tracks():
-    pass
