@@ -30,13 +30,18 @@ from init_utils import (
 
 """
 TODO: 
-- Tracking interface (run.py) needs to edit metadata with relevant cameras. 
-- (Let's make point cloud an input as well)
-- Hardcoded point cloud to init. Derive init from input point cloud.
+- Precomputed Capsule needs: 
+  - Point clouds (generated faster please)
+  - Metadata yml (Yes, the cameras are in different spots)
 
+- Client script: 
+  - Write App Panel
+  - Write Stream to aind-scratch-data for immediate availability + easy sharing 
+  (The dataset should not live in CO considering training is on HPC/remote cluster)
+  - Write Parallel capsule submission
+
+- Integration Test
 - Wandb logging? Ctrl + F to remove after testing. 
-- Next point cloud sampling.
-^ Let me pivot to this briefly. 
 """
 
 def read_config_yaml(yaml_path: str) -> dict:
@@ -44,10 +49,7 @@ def read_config_yaml(yaml_path: str) -> dict:
         yaml_dict = yaml.safe_load(f)
     return yaml_dict
 
-# NOTE: 
-# Provide metadata with full set/subset of extrinsic/intrinsic matrices
-# in precomputed dataset. 
-def get_dataset(t: int, dataset_path: Path, metadata: dict):
+def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[str]=[]):
     """
     Dataset is a list of dictionaries containing:
     - camera object
@@ -57,7 +59,10 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict):
     """
     assert (list(metadata['extrinsic_matrices'].keys()) ==
             list(metadata['intrinsic_matrices'].keys())), 'metadata must contain same number of extrinsic and intrinsic matrices.'
-    cams = list(metadata['extrinsic_matrices'].keys())
+    assert all([cam_id in list(metadata['extrinsic_matrices'].keys()) 
+                for cam_id in camera_subset]), \
+        'Camera subset must be a subset of available cameras.'
+
     h = metadata['camera_height']
     w = metadata['camera_width']
 
@@ -69,8 +74,8 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict):
     scene_center = np.mean(np.array(cam_centers), axis=0)
 
     dataset = []
-    for i, cam_id in enumerate(cams):
-        # NOTE: far_plane_z is important for gaussian visibility!
+    for i, cam_id in enumerate(camera_subset):
+        # far_plane_z is important for gaussian visibility!
         w2c = np.array(metadata['extrinsic_matrices'][cam_id])
         k = np.array(metadata['intrinsic_matrices'][cam_id])
         far_plane_z = np.linalg.norm(scene_center - cam_centers[i]) * 2.
@@ -102,61 +107,38 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict):
                         'cam_far_plane': far_plane_z})
     return dataset
 
-# NOTE: 
-# A hardcoded point cloud. Need to relax this. 
-def initialize_params(t: int, dataset_path: Path, metadata: dict, downsample_lvl: int):
+def initialize_params(t: int, dataset_path: Path, pc_path: str, metadata: dict, downsample_lvl: int):
     """
     Initalize application params and vars.
     """
 
-    # NOTE: Hardcoded directory
-    mouse_pc = np.load(f'/root/capsule/data/rat7m_1/point_cloud.npy')
-
-    # NOTE: Downsampling MC PC by factor
+    # Downsampling input PC by factor (mean distance between pts)
+    mouse_pc = np.load(pc_path)
     sq_dist, _ = o3d_knn(mouse_pc, num_knn=3)
     mean_sq_dist = np.mean(sq_dist)
-
-    # Baseline voxel resolution is half of the mean size
-    # between point cloud data points, which corresponds to
-    # a factor of 2**-1.
-    # factor = 2**(downsample_lvl - 1)
     factor = 1 + (downsample_lvl * 0.25)
     voxel_size = mean_sq_dist * factor
 
-    # NOTE: Hardcoding 0.5 to produce a voxel size that looks good.
-    # I suggest defining an explicit voxel size based on the calibrated scene for more principled initalization.
-    # factor = 0.5
-    # voxel_size = mean_sq_dist * factor
-
+    # Starting point cloud
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(mouse_pc)
     downsampled_pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
-    means3d = np.asarray(downsampled_pcd.points)  # Start point cloud
-    total_pts = len(means3d)
+    means3d = np.asarray(downsampled_pcd.points)
 
+    # Metadata
     sq_dist, _ = o3d_knn(means3d, 3)
     mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
+    total_pts = len(means3d)
 
-    # NOTE: Hardcoded average mouse color.
-    # rgb_colors = np.zeros((total_pts, 3))
-    # rgb_colors = rgb_colors + (np.array([158, 121, 115]) / 255)
-    rgb_colors = np.ones((total_pts, 3))  # Changed to white for coarse gaussians!
+    # Starting Color, white
+    rgb_colors = np.ones((total_pts, 3))
 
-    # Get the scene center to initalize full screen Gaussians.
-    cam_exts = []
-    for cam in metadata['extrinsic_matrices'].keys():
-        cam_exts.append(np.array(metadata['extrinsic_matrices'][cam]))
-    cam_exts = np.stack(cam_exts)
-    cam_centers = np.linalg.inv(cam_exts)[:, :3, 3]  # Get scene radius
-    scene_center = np.mean(cam_centers, 0)
-    print("Cam centers shape", cam_centers.shape)
-    print("Scene center", scene_center)
-
+    # Starting parameter buffer
     params = {
         'means3D': means3d,
         'rgb_colors': rgb_colors,
         'unnorm_rotations': np.tile([1, 0, 0, 0], (total_pts, 1)),
-        'logit_opacities': np.ones((total_pts, 1)),  # Changed to ones
+        'logit_opacities': np.ones((total_pts, 1)),  # Fully opaque
         'log_scale': np.log(np.sqrt(mean3_sq_dist))[..., None]
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
@@ -168,12 +150,10 @@ def initialize_params(t: int, dataset_path: Path, metadata: dict, downsample_lvl
     cam_exts = np.stack(cam_exts)
     cam_centers = np.linalg.inv(cam_exts)[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
-
     print('scene radius', scene_radius)
     print(f"{params['means3D'].shape=}")
 
     return params, scene_radius
-
 
 # ------
 # Training Stages
@@ -453,14 +433,14 @@ def get_tracking_loss(curr_params, curr_data, local_gaussian_pts):
 
 # -------
 # Training Recipe 
-def reconstruct_timestep(t, dataset_path, metadata, recon_iters):
+def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, recon_iters):
     """
     Runs reconstruction optimization loop
     """
 
     # Fetch data at current time
-    dataset = get_dataset(t, dataset_path, metadata)
-    params, scene_radius = initialize_params(t, dataset_path, metadata, downsample_lvl=0)
+    dataset = get_dataset(t, dataset_path, metadata, camera_subset)
+    params, scene_radius = initialize_params(t, dataset_path, pc_path, metadata, downsample_lvl=0)
 
     # Stage 1 Reconstruction
     progress_bar = tqdm(range(recon_iters), desc=f"timestep {t}")
@@ -653,7 +633,16 @@ def track_gaussians(t, curr_params, curr_dataset, scene_radius, local_gaussian_p
 
     return curr_params
 
-def train(dataset_path: str):
+def train(
+    dataset_path: str, 
+    metadata_path: str, 
+    pc_path: str, 
+    camera_subset: list[str],
+    start_time: int, 
+    num_timesteps: int, 
+    stride: int, 
+    output_timeseries_path: str
+):
     """
     Edited to accept custom dataset directory.
     """
@@ -662,52 +651,65 @@ def train(dataset_path: str):
     wandb.define_metric("recon_iter")
     wandb.define_metric("track_iter")
 
-    dataset_path = Path(dataset_path)
-    metadata_path = str(dataset_path / 'metadata.yaml')
-    metadata = read_config_yaml(metadata_path)
-    exp = metadata['dataset_name']
-    num_timesteps = int(metadata['num_frames'])
-
-    # Move to config file
+    # Optimization Hyperparameters
     RECONSTRUCTION_ITERS = 200
     # RECONSTRUCTION_ITERS = 50   # For quick testing
-
-    TRACKING_ITERS = 100  # Really exaggerating this to see if tracking improves.
-    OUTPUT_TIMESERIES_PATH = "/results/tmp.npz"
-
-    start_time = 0
-    num_timesteps = 50
-    # start_time = 0
-    # num_timesteps = 3499
-    stride = 1
+    TRACKING_ITERS = 100
 
     # Central Timeseries Buffer
     gaussian_timeseries = []
 
     # Initial Reconstruction
+    metadata = read_config_yaml(metadata_path)
     curr_params, local_gaussian_pts, scene_radius = reconstruct_timestep(start_time,
                                                                         dataset_path,
+                                                                        pc_path,
                                                                         metadata,
+                                                                        camera_subset,
                                                                         recon_iters=RECONSTRUCTION_ITERS)
     gaussian_timeseries.append(params2cpu(curr_params))
 
     # Tracking Loop
     for t in range(start_time + 1, start_time + num_timesteps, stride):
-        curr_dataset = get_dataset(t, dataset_path, metadata)
+        curr_dataset = get_dataset(t, dataset_path, metadata, camera_subset)
         curr_params = \
             track_gaussians(t, curr_params, curr_dataset, scene_radius,
                             local_gaussian_pts, track_iters=TRACKING_ITERS)
         gaussian_timeseries.append(params2cpu(curr_params))
 
     # End of tracking, save pc timeseries
-    save_params(gaussian_timeseries, OUTPUT_TIMESERIES_PATH)
+    save_params(gaussian_timeseries, output_timeseries_path)
 
 # -------
 
 if __name__ == "__main__":
+    # Edit these at runtime
+    # I am doing a parallel capsule run which is more flexible than parallel pipeline run. 
     DATASET_PATH = '/root/capsule/data/rat7m-3dgs'
+    camera_subset = ['1', '2', '3', '4', '5', '6']
 
+    # TODO: 
+    # Read these from an app panel
+    start_time = 0
+    num_timesteps = 50
+    stride = 1
+    metadata_path = '...'
+    pc_path = '...'
+    OUTPUT_TIMESERIES_PATH = "/results/tmp.npz"
+
+    # Start training
     start_time = time.time()
-    train(DATASET_PATH)
-    torch.cuda.empty_cache()
+    train(
+        DATASET_PATH,
+        metadata_path, 
+        pc_path, 
+        camera_subset,
+        start_time,
+        num_timesteps, 
+        stride, 
+        output_timeseries_path
+    )
     print(f'Took {time.time() - start_time}')
+
+    # TODO: Export to S3
+    # ...
