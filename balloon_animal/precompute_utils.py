@@ -7,9 +7,12 @@ from PIL import Image, ImageDraw, ImageFont
 from typing import List, Tuple, Optional
 
 import cv2
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
 
 def extract_number(filename: str) -> int:
     """
@@ -35,11 +38,6 @@ def get_ordered_paths(input_dir: str) -> list[Path]:
             key=lambda x: extract_number(str(x.stem)))
     return files
 
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from PIL import Image
-import numpy as np
-from pathlib import Path
 
 def visualize_point_prediction(image, predicted_point, output_path, subject=None, 
                          point_color='red', point_size=100, cross_size=20,
