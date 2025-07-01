@@ -2,7 +2,7 @@
 
 Central repository containing code to run every step of the balloon-animal track generation pipeline. 
 
-TODO: 
-- Add requirements as you go.
-- Add pipeline visual here.
-- Add track visuals here.
+NOTE: 
+To keep this repository clean, dependencies like Pytorch and diff-gaussian-rasterization are kept separate. 
+Please install these into your downstream runtime environment. 
+
