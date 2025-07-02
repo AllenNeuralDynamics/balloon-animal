@@ -186,19 +186,18 @@ def generate_precomputed_assets(
     )
 
     # Copy img contents over, renaming in ascending number order.
-    # NOTE: TEMP COMMENT OUT
-    # print('Copying images to output directory...')
-    # for vid_dir in video_dataset:
-    #     vid_name = str(Path(vid_dir).name)
-    #     curr_img_dir = (Path(img_dir) / vid_name)
-    #     curr_img_dir.mkdir(parents=True, exist_ok=True)
+    print('Copying images to output directory...')
+    for vid_dir in video_dataset:
+        vid_name = str(Path(vid_dir).name)
+        curr_img_dir = (Path(img_dir) / vid_name)
+        curr_img_dir.mkdir(parents=True, exist_ok=True)
 
-    #     print(f'Copying {vid_dir}...')
-    #     ordered_img_paths = get_ordered_paths(str(vid_dir))
-    #     for i, img_path in enumerate(ordered_img_paths):
-    #         source_path = str(img_path)
-    #         dest_path = str(curr_img_dir / f'{i}.jpg')
-    #         shutil.copy2(source_path, dest_path)
+        print(f'Copying {vid_dir}...')
+        ordered_img_paths = get_ordered_paths(str(vid_dir))
+        for i, img_path in enumerate(ordered_img_paths):
+            source_path = str(img_path)
+            dest_path = str(curr_img_dir / f'{i}.jpg')
+            shutil.copy2(source_path, dest_path)
 
     # Alternative OmDet, faster, but more imprecise.
     # print('Running initial detection...')
@@ -212,59 +211,29 @@ def generate_precomputed_assets(
     #         detections = model(first_image, [prompt])
     #         initial_detections[vid_name] = detections
 
-    # NOTE: TEMP COMMENT OUT
-    # print('Running initial detection...')
-    # initial_detections = {}
-    # with MolmoInference(cache_dir="/scratch/hub") as molmo:
-    #     for vid_dir in video_dataset:
-    #         vid_name = str(Path(vid_dir).name)
-    #         first_image = str(get_ordered_paths(vid_dir)[0])
+    print('Running initial detection...')
+    initial_detections = {}
+    with MolmoInference(cache_dir="/scratch/hub") as molmo:
+        for vid_dir in video_dataset:
+            vid_name = str(Path(vid_dir).name)
+            first_image = str(get_ordered_paths(vid_dir)[0])
 
-    #         print(f'Pointing on {vid_name}...')
-    #         coordinates = molmo(first_image, prompt)
-    #         initial_detections[vid_name] = coordinates
-    initial_detections = {
-        'camera1': (0.65 * 1328, 0.66 * 1048),
-        'camera2': (0.44 * 1328, 0.68 * 1048),
-        'camera3': (0.44 * 1328, 0.70 * 1048),
-        'camera4': (0.60 * 1328, 0.54 * 1048),
-        'camera5': (0.76 * 1328, 0.61 * 1048),
-        'camera6': (0.50 * 1328, 0.69 * 1048)
-    }
-
+            print(f'Pointing on {vid_name}...')
+            coordinates = molmo(first_image, prompt)
+            initial_detections[vid_name] = coordinates
+    
     # Open Vocabulary Detection -> Segmentation
-    # NOTE: TEMP COMMENT OUT
-    # print('Running segmentation...')
-    # with SAM2Inference(option='video', cache_dir="/scratch/hub") as model:
-    #     for vid_dir in video_dataset:
-    #         vid_name = str(Path(vid_dir).name)
-    #         # input_box = initial_detections[vid_name][0]['box']
-    #         input_coords = initial_detections[vid_name]
+    print('Running segmentation...')
+    with SAM2Inference(option='video', cache_dir="/scratch/hub") as model:
+        for vid_dir in video_dataset:
+            vid_name = str(Path(vid_dir).name)
+            # input_box = initial_detections[vid_name][0]['box']
+            input_coords = initial_detections[vid_name]
 
-    #         print(f'Segmenting {vid_name}...')
-    #         model.process_directory(image_dir=vid_dir,
-    #                                 output_dir=seg_dir / vid_name,
-    #                                 input_points=[input_coords])
-
-    # Segmentation -> Point Cloud
-    # print('Running Point Cloud Initalization...')
-    # num_images = len(list(video_dataset[0].iterdir()))
-    # for i in range(num_images):
-    #     seg_masks = [
-    #         np.array(Image.open(vid_dir / f'{i}.jpg')) / 255.
-    #         for vid_dir in seg_dir.iterdir()
-    #     ]
-
-    #     point_cloud = monte_carlo_sample_visible_points(
-    #         video_extrinsic_matrices,
-    #         video_intrinsic_matrices,
-    #         seg_masks,
-    #         target_points=pc_size,
-    #         visibility_percentage=pc_visibility
-    #     )
-    #     point_cloud_path = str(pc_dir / f'{i}.npy')
-    #     np.save(point_cloud_path, point_cloud)
-    # ^ If multiple point cloud initalization is needed
+            print(f'Segmenting {vid_name}...')
+            model.process_directory(image_dir=vid_dir,
+                                    output_dir=seg_dir / vid_name,
+                                    input_points=[input_coords])
 
     # Segmentation -> Point Cloud Init
     print('Running Point Cloud Initalization...')
