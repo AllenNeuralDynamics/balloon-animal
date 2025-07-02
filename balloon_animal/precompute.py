@@ -635,10 +635,12 @@ def monte_carlo_sample_visible_points(
     seg_masks: list,
     target_points: int = 50000,
     visibility_percentage: float = 0.6,
-    batch_size: int = 1000000
+    batch_size: int = 1000000,
+    exploration_points: int = 1000000,
+    region_expansion_factor: float = 1.5
 ) -> np.ndarray:
     """
-    Perform Monte Carlo sampling of 3D space and filter points by visibility.
+    Optimized Monte Carlo sampling with adaptive region focusing.
     
     Args:
         extrinsic_matrices: List of camera extrinsic matrices (camera-to-world transform)
@@ -647,11 +649,13 @@ def monte_carlo_sample_visible_points(
         target_points: Target number of points to return in the final point cloud
         visibility_percentage: Percentage of cameras a point must be visible from (0.0 to 1.0)
         batch_size: Number of points to sample in each batch during Monte Carlo sampling
+        exploration_points: Number of points to find in exploration phase
+        region_expansion_factor: Factor to expand the bounding region for focused sampling
         
     Returns:
         np.ndarray: Filtered point cloud containing points visible from the required percentage of views
     """
-    # Check that inputs have matching sizes
+    # Input validation
     num_cameras = len(extrinsic_matrices)
     if not (len(intrinsic_matrices) == num_cameras and len(seg_masks) == num_cameras):
         raise ValueError(
@@ -660,92 +664,169 @@ def monte_carlo_sample_visible_points(
             f"seg_masks ({len(seg_masks)})"
         )
     
-    # Calculate minimum number of views based on percentage
     min_visible_views = max(1, round(visibility_percentage * num_cameras))
     
-    # Calculate camera centers
+    # Pre-compute camera information
     cam_centers = []
-    for ext in extrinsic_matrices:
+    projection_matrices = []
+    
+    for i, (ext, k, seg) in enumerate(zip(extrinsic_matrices, intrinsic_matrices, seg_masks)):
+        # Camera center
         cam_centers.append(np.linalg.inv(ext)[:3, 3])
-    cam_center_buffer = np.array(cam_centers)
+        
+        # Pre-compute projection matrix
+        h, w = seg.shape
+        fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
+        z_near = 1.0
+        z_far = 1000.0  # Conservative estimate, will be refined later
+        
+        proj = np.array([
+            [2 * fx / w, 0.0, -(w - 2 * cx) / w, 0.0],
+            [0.0, 2 * fy / h, -(h - 2 * cy) / h, 0.0],
+            [0.0, 0.0, z_far / (z_far - z_near), -(z_far * z_near) / (z_far - z_near)],
+            [0.0, 0.0, 1.0, 0.0]
+        ])
+        
+        projection_matrices.append((ext, proj, seg, w, h))
     
-    # Compute scene center and radius
-    scene_center = np.mean(cam_center_buffer, axis=0)
-    scene_radius = 1.1 * np.max(np.linalg.norm(cam_center_buffer - scene_center[None], axis=-1))
+    cam_centers = np.array(cam_centers)
+    scene_center = np.mean(cam_centers, axis=0)
+    scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - scene_center, axis=1))
     
-    # Initialize result array
+    print("Phase 1: Exploration - Finding initial visible region...")
+    
+    # Phase 1: Exploration sampling to find the visible region
+    exploration_samples = _sample_sphere_uniform(scene_center, scene_radius, exploration_points * 20)  # Oversample
+    visible_points = _filter_visible_points(exploration_samples, projection_matrices, min_visible_views)
+    
+    if len(visible_points) < 10:
+        print("Warning: Very few visible points found in exploration. Using original full-sphere sampling.")
+        return _sample_full_sphere(
+            projection_matrices, scene_center, scene_radius, 
+            target_points, min_visible_views, batch_size
+        )
+    
+    # Take first exploration_points for region estimation
+    visible_points = visible_points[:exploration_points]
+    print(f"Found {len(visible_points)} visible points in exploration phase")
+    
+    # Phase 2: Define focused sampling region
+    focused_region = _compute_focused_region(visible_points, region_expansion_factor)
+    print(f"Focused region: center={focused_region['center']}, radius={focused_region['bounds']}")
+    
+    # Phase 3: Focused sampling in the identified region
+    print("Phase 2: Focused sampling in identified region...")
+    result_points = np.copy(visible_points)  # Start with exploration points
+    
+    # Adjust batch size for focused region (smaller region = smaller batches can be more efficient)
+    focused_batch_size = min(batch_size, batch_size // 4)
+    
+    while len(result_points) < target_points:
+        # Sample in focused region
+        remaining_points = target_points - len(result_points)
+        current_batch_size = min(focused_batch_size, remaining_points * 10)  # Oversample factor
+        
+        samples = _sample_focused_region(focused_region, current_batch_size)
+        visible_batch = _filter_visible_points(samples, projection_matrices, min_visible_views)
+        
+        if len(visible_batch) > 0:
+            result_points = np.vstack((result_points, visible_batch))
+            print(f"Progress: {len(result_points)}/{target_points} points")
+        
+    return result_points[:target_points]
+
+def _sample_sphere_uniform(center: np.ndarray, radius: float, n_samples: int) -> np.ndarray:
+    """Sample points uniformly within a sphere."""
+    theta = np.random.uniform(0, 2*np.pi, n_samples)
+    phi = np.arccos(np.random.uniform(-1, 1, n_samples))
+    r = radius * np.cbrt(np.random.uniform(0, 1, n_samples))
+    
+    x = center[0] + r * np.sin(phi) * np.cos(theta)
+    y = center[1] + r * np.sin(phi) * np.sin(theta)
+    z = center[2] + r * np.cos(phi)
+    
+    return np.column_stack((x, y, z))
+
+def _sample_focused_region(region_info: dict, n_samples: int) -> np.ndarray:
+    # Sample within axis-aligned bounding box
+    mins, maxs = region_info['bounds']
+    samples = np.random.uniform(mins, maxs, (n_samples, 3))
+    return samples
+
+def _compute_focused_region(visible_points: np.ndarray, expansion_factor: float) -> dict:
+    """Compute focused sampling region based on visible points."""
+    # Use bounding box approach for better efficiency
+    mins = np.min(visible_points, axis=0)
+    maxs = np.max(visible_points, axis=0)
+    
+    # Expand the bounding box
+    center = (mins + maxs) / 2
+    extent = (maxs - mins) / 2 * expansion_factor
+    
+    expanded_mins = center - extent
+    expanded_maxs = center + extent
+    
+    return {
+        'type': 'box',
+        'bounds': (expanded_mins, expanded_maxs),
+        'center': center
+    }
+
+def _filter_visible_points(samples: np.ndarray, projection_matrices: list, min_visible_views: int) -> np.ndarray:
+    """Filter points based on visibility criteria."""
+    if len(samples) == 0:
+        return np.zeros((0, 3))
+    
+    batch_size = len(samples)
+    global_visible_mask = np.zeros(batch_size)
+    
+    # Homogeneous coordinates
+    samples_homo = np.hstack((samples, np.ones((batch_size, 1))))
+    
+    for ext, proj, seg, w, h in projection_matrices:
+        # Apply transformations
+        transformed = samples_homo @ ext.T @ proj.T
+        
+        # Perspective divide
+        ndc = transformed[:, :3] / transformed[:, 3:4]
+        
+        # Convert to pixel coordinates
+        pixel_coords = (ndc[:, :2] + 1) / 2 * np.array([w, h])
+        pixel_coords = np.round(pixel_coords).astype(int)
+        
+        # Check bounds
+        valid_mask = (
+            (pixel_coords[:, 0] >= 0) & (pixel_coords[:, 0] < w) &
+            (pixel_coords[:, 1] >= 0) & (pixel_coords[:, 1] < h)
+        )
+        
+        # Check segmentation mask for valid points
+        local_visible_mask = np.zeros(batch_size)
+        if np.any(valid_mask):
+            valid_indices = np.where(valid_mask)[0]
+            valid_pixels = pixel_coords[valid_mask]
+            local_visible_mask[valid_indices] = seg[valid_pixels[:, 1], valid_pixels[:, 0]]
+        
+        global_visible_mask += local_visible_mask
+    
+    # Return points visible from enough cameras
+    valid_indices = global_visible_mask >= min_visible_views
+    return samples[valid_indices]
+
+def _sample_full_sphere(projection_matrices, scene_center, scene_radius, target_points, min_visible_views, batch_size):
+    """Fallback to original full-sphere sampling method."""
     result_points = np.zeros((0, 3))
     
-    # Sample in batches until we reach the target number of points
     while len(result_points) < target_points:
-        # Sample scene sphere uniformly in current batch
-        theta = np.random.uniform(0, 2*np.pi, batch_size)
-        phi = np.arccos(np.random.uniform(-1, 1, batch_size))
-        r = scene_radius * np.cbrt(np.random.uniform(0, 1, batch_size))
-        x = scene_center[0] + r * np.sin(phi) * np.cos(theta)
-        y = scene_center[1] + r * np.sin(phi) * np.sin(theta)
-        z = scene_center[2] + r * np.cos(phi)
-        samples = np.column_stack((x, y, z))
+        samples = _sample_sphere_uniform(scene_center, scene_radius, batch_size)
+        visible_batch = _filter_visible_points(samples, projection_matrices, min_visible_views)
         
-        # Project sampled points onto each camera and update visible mask
-        global_visible_mask = np.zeros(batch_size)
+        if len(visible_batch) > 0:
+            result_points = np.vstack((result_points, visible_batch))
+            print(f"Fallback sampling: {len(result_points)}/{target_points} points")
         
-        for i, (ext, k, seg) in enumerate(zip(extrinsic_matrices, intrinsic_matrices, seg_masks)):
-            # Get segmentation mask dimensions
-            h, w = seg.shape
-            
-            # Extract intrinsic parameters
-            fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
-            
-            # Calculate near and far planes for projection
-            z_near = 1.0
-            z_far = np.linalg.norm(scene_center - cam_centers[i]) * 2.0
-            
-            # Construct projection matrix
-            proj = np.array([
-                [2 * fx / w, 0.0, -(w - 2 * cx) / w, 0.0],
-                [0.0, 2 * fy / h, -(h - 2 * cy) / h, 0.0],
-                [0.0, 0.0, z_far / (z_far - z_near), -(z_far * z_near) / (z_far - z_near)],
-                [0.0, 0.0, 1.0, 0.0]
-            ])
-            
-            # Apply view and projection matrices
-            s = np.copy(samples)
-            s = np.hstack((s, np.ones((batch_size, 1))))
-            s = s @ ext.T @ proj.T
-            s = s[:, :3] / s[:, 3:4]
-            
-            # Convert to pixel coordinates
-            s = s[:, :2]
-            s = (s + 1) / 2
-            s = s * np.array([[w, h]])
-            s = np.round(s).astype(int)
-            
-            # Check which points are within image bounds
-            valid_mask = (s[:, 0] >= 0) & (s[:, 0] < w) & (s[:, 1] >= 0) & (s[:, 1] < h)
-            
-            # Efficient indexing for valid points only
-            local_visible_mask = np.zeros(batch_size)
-            valid_indices = np.where(valid_mask)[0]
-            valid_points = s[valid_mask]
-            
-            # Check segmentation mask for valid points
-            local_visible_mask[valid_indices] = seg[valid_points[:, 1], valid_points[:, 0]]
-            global_visible_mask += local_visible_mask
-        
-        # Filter points that are visible from at least min_visible_views cameras
-        valid_mask = global_visible_mask >= min_visible_views
-        filtered_batch = samples[valid_mask]
-        
-        # Append filtered batch to result
-        result_points = np.vstack((result_points, filtered_batch))
-        
-        # If we have more points than needed, truncate
         if len(result_points) > target_points:
             result_points = result_points[:target_points]
             break
-        
-        # Print progress update
-        print(f"Currently have {len(result_points)} of {target_points} points")
     
     return result_points
