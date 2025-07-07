@@ -28,22 +28,6 @@ from init_utils import (
     quaternion_rotate_points
 )
 
-"""
-TODO: 
-- Precomputed Capsule needs: 
-  - Point clouds (generated faster please)
-  - Metadata yml (Yes, the cameras are in different spots)
-
-- Client script: 
-  - Write App Panel
-  - Write Stream to aind-scratch-data for immediate availability + easy sharing 
-  (The dataset should not live in CO considering training is on HPC/remote cluster)
-  - Write Parallel capsule submission
-
-- Integration Test
-- Wandb logging? Ctrl + F to remove after testing. 
-"""
-
 def read_config_yaml(yaml_path: str) -> dict:
     with open(yaml_path, "r") as f:
         yaml_dict = yaml.safe_load(f)
@@ -679,37 +663,4 @@ def train(
 
     # End of tracking, save pc timeseries
     save_params(gaussian_timeseries, output_timeseries_path)
-
 # -------
-
-if __name__ == "__main__":
-    # Edit these at runtime
-    # I am doing a parallel capsule run which is more flexible than parallel pipeline run. 
-    DATASET_PATH = '/root/capsule/data/rat7m-3dgs'
-    camera_subset = ['1', '2', '3', '4', '5', '6']
-
-    # TODO: 
-    # Read these from an app panel
-    start_time = 0
-    num_timesteps = 50
-    stride = 1
-    metadata_path = '...'
-    pc_path = '...'
-    OUTPUT_TIMESERIES_PATH = "/results/tmp.npz"
-
-    # Start training
-    start_time = time.time()
-    train(
-        DATASET_PATH,
-        metadata_path, 
-        pc_path, 
-        camera_subset,
-        start_time,
-        num_timesteps, 
-        stride, 
-        output_timeseries_path
-    )
-    print(f'Took {time.time() - start_time}')
-
-    # TODO: Export to S3
-    # ...

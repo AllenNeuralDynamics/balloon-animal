@@ -21,7 +21,9 @@ dependencies = [
     "plotly",
     "einops",
     "tensorflow",
-    "accelerate"
+    "accelerate",
+    "open3d",
+    "diff-gaussian-rasterization @ git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git"
 ]
 
 [project.optional-dependencies]
@@ -33,3 +35,6 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["balloon_animal"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
