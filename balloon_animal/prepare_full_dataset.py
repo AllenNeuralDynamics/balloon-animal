@@ -13,19 +13,20 @@ class Skeleton:
         self.edges = edges
 
 def format_camera_yaml(
+    dataset_name: str, 
     camera_width: int,
     camera_height: int,
     num_cameras: int,
     num_frames: int,
     extrinsic_matrices: list[np.ndarray],
     intrinsic_matrices: list[np.ndarray],
-    output_yaml_path: str,
-    dataset_name: str = 'dataset'
+    output_yaml_path: str
 ):
     """
     Format camera configuration data into YAML file using the yaml library.
     
     Args:
+        dataset_name (str): Name of the dataset
         camera_width (int): Width of camera images
         camera_height (int): Height of camera images
         num_cameras (int): Number of cameras
@@ -33,7 +34,6 @@ def format_camera_yaml(
         extrinsic_matrices (list[np.ndarray]): List of 4x4 extrinsic matrices
         intrinsic_matrices (list[np.ndarray]): List of 3x3 intrinsic matrices
         output_yaml_path (str): Path to output YAML file
-        dataset_name (str): Name of the dataset
     """
     
     # Create the data structure using regular dict
@@ -122,11 +122,13 @@ def generate_validation(
                     skeleton_edges=skeleton.edges)
 
 def generate_precomputed_assets(
+    dataset_name: str,
     video_dataset: list[str],
     video_extrinsic_matrices: list[np.ndarray],
     video_intrinsic_matrices: list[np.ndarray],
     output_dir: str,
     prompt: str,
+    batch_size: int = 10,  # Low number to prevent CUDA OOM. 
     pc_size: int = 5000,
     pc_visibility: float = 0.8,
     include_validation: bool = True,
@@ -157,6 +159,7 @@ def generate_precomputed_assets(
     Directory names are preserved.
 
     Inputs:
+        dataset_name: name of the dataset for future reference
         video_dataset: list of synced image sequence directory paths
         output_dir: output directory to place assets
         prompt: prompt to open vocabulary model
@@ -176,6 +179,7 @@ def generate_precomputed_assets(
     num_cameras = len(video_dataset)
     num_frames = len(img_seq)
     format_camera_yaml(
+        dataset_name=dataset_name, 
         camera_width=camera_width,
         camera_height=camera_height,
         num_cameras=num_cameras,
@@ -233,7 +237,8 @@ def generate_precomputed_assets(
             print(f'Segmenting {vid_name}...')
             model.process_directory(image_dir=vid_dir,
                                     output_dir=seg_dir / vid_name,
-                                    input_points=[input_coords])
+                                    input_points=[input_coords],
+                                    batch_size=batch_size)
 
     # Segmentation -> Point Cloud Init
     print('Running Point Cloud Initalization...')
