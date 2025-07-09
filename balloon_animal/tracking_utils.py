@@ -122,6 +122,47 @@ def calc_ellipsoid_union_sdf(
 
     return union_sdf, union_parents
 
+def quaternions_to_rotation_matrices(q: torch.Tensor) -> torch.Tensor:
+    """
+    Convert batch of unnormalized quaternions [r, x, y, z]
+    into batch of rotation matrices.
+
+    Args:
+        q: Tensor of quaternions with shape (N, 4)
+
+    Returns:
+        Tensor of rotation matrices with shape (N, 3, 3)
+    """
+    # Validate input shape
+    if q.dim() != 2 or q.shape[1] != 4:
+        raise ValueError(f"Expected quaternions with shape (N, 4), got {q.shape}")
+
+    # Normalize quaternions
+    norm = torch.sqrt(q[:, 0]**2 + q[:, 1]**2 + q[:, 2]**2 + q[:, 3]**2)
+    q = q / norm.unsqueeze(1)
+
+    # Initialize rotation matrix tensor
+    rot = torch.zeros((q.shape[0], 3, 3), device=q.device, dtype=q.dtype)
+
+    # Extract quaternion components
+    r = q[:, 0]
+    x = q[:, 1]
+    y = q[:, 2]
+    z = q[:, 3]
+
+    # Fill rotation matrix
+    rot[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    rot[:, 0, 1] = 2 * (x * y - r * z)
+    rot[:, 0, 2] = 2 * (x * z + r * y)
+    rot[:, 1, 0] = 2 * (x * y + r * z)
+    rot[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    rot[:, 1, 2] = 2 * (y * z - r * x)
+    rot[:, 2, 0] = 2 * (x * z - r * y)
+    rot[:, 2, 1] = 2 * (y * z + r * x)
+    rot[:, 2, 2] = 1 - 2 * (x * x + y * y)
+
+    return rot
+
 def build_homogeneous_matrices(
     means: torch.Tensor,
     semi_axes: torch.Tensor,

@@ -23,7 +23,8 @@ dependencies = [
     "tensorflow",
     "accelerate",
     "open3d",
-    "diff-gaussian-rasterization @ git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git"
+    "diff-gaussian-rasterization @ git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git",
+    "wandb"
 ]
 
 [project.optional-dependencies]

@@ -18,15 +18,17 @@ import open3d as o3d
 from PIL import Image
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from tracking_external import setup_camera, weighted_l2_loss_v2, \
+from balloon_animal.tracking_external import setup_camera, weighted_l2_loss_v2, \
     o3d_knn, params2cpu, save_params, calc_ssim, calc_psnr
 
-from init_utils import (
+from balloon_animal.tracking_utils import (
     build_homogeneous_matrices,
     filter_ellipsoids_by_overlap,
     sample_ellipsoid_union_surface,
     quaternion_rotate_points
 )
+
+import wandb
 
 def read_config_yaml(yaml_path: str) -> dict:
     with open(yaml_path, "r") as f:
@@ -70,14 +72,14 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
         # Image is normalized [0, 1]
         # Seg is also normalized [0, 1]
         found_imgs = []
-        img_cam_dir = dataset_path / 'img' / f'cam_{cam_id}'
+        img_cam_dir = dataset_path / 'img' / f'camera{cam_id}'
         found_imgs.extend(img_cam_dir.glob(f'{t}.jpg'))
         found_imgs.extend(img_cam_dir.glob(f'{t}.png'))
         im = np.array(copy.deepcopy(Image.open(str(found_imgs[0]))))
         im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
 
         found_segs = []
-        seg_cam_dir = dataset_path / 'seg' / f'cam_{cam_id}'
+        seg_cam_dir = dataset_path / 'seg' / f'camera{cam_id}'
         found_segs.extend(seg_cam_dir.glob(f'{t}.jpg'))
         found_segs.extend(seg_cam_dir.glob(f'{t}.png'))
         seg = np.array(copy.deepcopy(Image.open(str(found_segs[0])))).astype(np.float32)
@@ -406,9 +408,8 @@ def get_tracking_loss(curr_params, curr_data, local_gaussian_pts):
 
         log_render_imgs[d["id"]] = im
 
-    loss = seg_loss + base_color_loss + texture_loss
+    loss = base_color_loss + texture_loss
 
-    wandb.log({f"seg_loss": seg_loss})
     wandb.log({f"base_color_loss": base_color_loss})
     wandb.log({f"texture_loss": texture_loss})
 
@@ -424,7 +425,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
 
     # Fetch data at current time
     dataset = get_dataset(t, dataset_path, metadata, camera_subset)
-    params, scene_radius = initialize_params(t, dataset_path, pc_path, metadata, downsample_lvl=0)
+    params, scene_radius = initialize_params(t, dataset_path, pc_path, metadata, downsample_lvl=1)
 
     # Stage 1 Reconstruction
     progress_bar = tqdm(range(recon_iters), desc=f"timestep {t}")
@@ -434,7 +435,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
         for d in dataset:
             loss, im, _ = get_recon_loss(params, d)
             loss.backward()
-        wandb.log({f"recon_loss/lvl_{lvl}": loss})
+        wandb.log({f"recon_loss": loss})
 
         with torch.no_grad():
             if i % 10 == 0:
@@ -449,7 +450,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
     colors = params['rgb_colors'].detach().cpu().numpy()
     colors = np.clip(colors, 0, 1) * 255
     log_point_cloud = np.concatenate((positions, colors), axis=1)
-    wandb.log({f"1st_stage_reconstruction/lvl_{lvl}": wandb.Object3D(log_point_cloud)}, commit=True)
+    wandb.log({f"1st_stage_reconstruction": wandb.Object3D(log_point_cloud)}, commit=True)
 
     # Stage 2 Reconstruction
     log_scale = params['log_scale'].detach().cpu().contiguous().numpy()
@@ -463,7 +464,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
         for d in dataset:
             loss, im, _ = get_recon_loss_2(params, d)
             loss.backward()
-        wandb.log({f"recon_loss/lvl_{lvl}": loss})
+        wandb.log({f"recon_loss": loss})
 
         with torch.no_grad():
             if i % 10 == 0:
@@ -477,7 +478,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
     colors = params['rgb_colors'].detach().cpu().numpy()
     colors = np.clip(colors, 0, 1) * 255
     log_point_cloud = np.concatenate((positions, colors), axis=1)
-    wandb.log({f"2nd_stage_reconstruction/lvl_{lvl}": wandb.Object3D(log_point_cloud)}, commit=True)
+    wandb.log({f"2nd_stage_reconstruction": wandb.Object3D(log_point_cloud)}, commit=True)
 
     # Stage 3 Reconstruction Prep: Filter the gaussians
     # Here, reconstructing parameter buffer following filtering operations.
@@ -581,7 +582,6 @@ def track_gaussians(t, curr_params, curr_dataset, scene_radius, local_gaussian_p
         # Using tracking loss
         loss, log_render_imgs = get_tracking_loss(
             curr_params, curr_dataset, local_gaussian_pts,
-            left_overlap, right_overlap
         )
         loss.backward(retain_graph=True)
         wandb.log({"tracking_loss": loss})
@@ -631,7 +631,6 @@ def train(
     Edited to accept custom dataset directory.
     """
 
-    wandb.init(project='3dgs-sweep')
     wandb.define_metric("recon_iter")
     wandb.define_metric("track_iter")
 
