@@ -38,7 +38,6 @@ def get_ordered_paths(input_dir: str) -> list[Path]:
             key=lambda x: extract_number(str(x.stem)))
     return files
 
-
 def visualize_point_prediction(image, predicted_point, output_path, subject=None, 
                          point_color='red', point_size=100, cross_size=20,
                          figsize=(12, 8), dpi=150):
