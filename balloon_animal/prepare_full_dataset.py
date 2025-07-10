@@ -129,6 +129,7 @@ def generate_precomputed_assets(
     output_dir: str,
     prompt: str,
     batch_size: int = 10,  # Low number to prevent CUDA OOM. 
+    batch_dir: str = '/results/tmp',
     pc_size: int = 5000,
     pc_visibility: float = 0.8,
     include_validation: bool = True,
@@ -190,7 +191,7 @@ def generate_precomputed_assets(
     )
 
     # Copy img contents over, renaming in ascending number order.
-    print('Copying images to output directory...')
+    print('Copying images to output directory...')    
     for vid_dir in video_dataset:
         vid_name = str(Path(vid_dir).name)
         curr_img_dir = (Path(img_dir) / vid_name)
@@ -238,7 +239,8 @@ def generate_precomputed_assets(
             model.process_directory(image_dir=vid_dir,
                                     output_dir=seg_dir / vid_name,
                                     input_points=[input_coords],
-                                    batch_size=batch_size)
+                                    batch_size=batch_size,
+                                    batch_dir=batch_dir)
 
     # Segmentation -> Point Cloud Init
     print('Running Point Cloud Initalization...')

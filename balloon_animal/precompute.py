@@ -513,7 +513,7 @@ class SAM2Inference:
 
     def process_directory(self, image_dir, output_dir, batch_size=100,
                           input_points=None, input_box=None, input_mask=None,
-                          mask_threshold=0.5):
+                          mask_threshold=0.5, batch_dir='/results/tmp'):
         """
         Process a directory of images with the SAM2 model using video propagation.
         NOTE: Single subject segmentation for now.
@@ -539,9 +539,9 @@ class SAM2Inference:
         # Validate that at least one prompt is provided
         self._validate_prompts(input_points, input_box)
         
-        # Divide input directory into subdirectory batches inside scratch folder
-        batch_dirs = Path(f'/scratch/{Path(image_dir).stem}_batches')
-        self._create_batches(str(image_dir), str(batch_dirs))
+        # Divide input directory into subdirectory batches inside batch folder
+        batch_dirs = Path(batch_dir) / f'{Path(image_dir).stem}_batches'
+        self._create_batches(str(image_dir), str(batch_dirs), batch_size=batch_size)
 
         # Make the output directory
         Path(output_dir).mkdir(parents=True, exist_ok=True)
