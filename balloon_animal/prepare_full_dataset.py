@@ -4,8 +4,8 @@ import shutil
 import numpy as np
 import yaml
 
-from balloon_animal.precompute import MolmoInference, SAM2Inference, monte_carlo_sample_visible_points
-from balloon_animal.precompute_utils import get_ordered_paths, visualize_point_prediction, create_video_from_images, visualize_scene
+from balloon_animal.precompute import MolmoInference, SAM2Inference
+from balloon_animal.precompute_utils import get_ordered_paths, visualize_point_prediction, create_video_from_images
 
 def format_camera_yaml(
     dataset_name: str, 
