@@ -7,19 +7,14 @@ import yaml
 from balloon_animal.precompute import MolmoInference, SAM2Inference, monte_carlo_sample_visible_points
 from balloon_animal.precompute_utils import get_ordered_paths, visualize_point_prediction, create_video_from_images, visualize_scene
 
-class Skeleton:
-    def __init__(self, points=None, edges=None):
-        self.points = points
-        self.edges = edges
-
 def format_camera_yaml(
     dataset_name: str, 
     camera_width: int,
     camera_height: int,
     num_cameras: int,
     num_frames: int,
-    extrinsic_matrices: list[np.ndarray],
-    intrinsic_matrices: list[np.ndarray],
+    extrinsic_matrices: dict[str, np.ndarray],
+    intrinsic_matrices: dict[str, np.ndarray],
     output_yaml_path: str
 ):
     """
@@ -47,14 +42,11 @@ def format_camera_yaml(
         'intrinsic_matrices': {}
     }
     
-    # Add extrinsic matrices (convert numpy arrays to lists)
-    for i, matrix in enumerate(extrinsic_matrices, 1):
-        data['extrinsic_matrices'][i] = matrix.tolist()
-    
-    # Add intrinsic matrices (convert numpy arrays to lists)
-    for i, matrix in enumerate(intrinsic_matrices, 1):
-        data['intrinsic_matrices'][i] = matrix.tolist()
-    
+    for name, matrix in extrinsic_matrices.items():
+        data['extrinsic_matrices'][name] = matrix.tolist()
+    for name, matrix in intrinsic_matrices.items():
+        data['intrinsic_matrices'][name] = matrix.tolist()
+
     # Write to YAML file using safe_dump
     with open(output_yaml_path, 'w') as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
@@ -62,17 +54,11 @@ def format_camera_yaml(
 def generate_validation(
     results_dir: str,
     initial_detections: dict,
-    video_extrinsic_matrices: list[np.ndarray],
-    point_cloud: np.ndarray,
-    skeleton: Skeleton
 ):
     """
     Parameters:
         results_dir (str): Output directory of generate_precomputed_assets()
         initial_detections (dict): Detections from generate_precomputed_assets()
-        video_extrinsic_matrices (list[np.ndarray]): Calibration from source dataset.
-        point_cloud (np.ndarray): Point cloud from generate_precomputed_assets()
-        skeleton (Skeleton): Graph GT inital pose. Can be blank.
 
     Generates preview of precomputed assets in the following format:
     detection:
@@ -81,7 +67,6 @@ def generate_validation(
     segmentation:
         |-- dir_1.mp4
         |-- dir_2.mp4
-    scene_0.html
     """
 
     results_dir = Path(results_dir)
@@ -113,27 +98,17 @@ def generate_validation(
         out_path = seg_path / f'{vid_name}.mp4'
 
         create_video_from_images(ordered_paths, out_path)
-
-    print('Generating Scene Preview...')
-    visualize_scene(video_extrinsic_matrices,
-                    point_cloud,
-                    output_path=str(val_path / 'scene.html'),
-                    skeleton_points=skeleton.points,
-                    skeleton_edges=skeleton.edges)
-
+    
 def generate_precomputed_assets(
     dataset_name: str,
     video_dataset: list[str],
-    video_extrinsic_matrices: list[np.ndarray],
-    video_intrinsic_matrices: list[np.ndarray],
+    video_extrinsic_matrices: dict[str, np.ndarray],
+    video_intrinsic_matrices: dict[str, np.ndarray],
     output_dir: str,
     prompt: str,
     batch_size: int = 10,  # Low number to prevent CUDA OOM. 
     batch_dir: str = '/results/tmp',
-    pc_size: int = 5000,
-    pc_visibility: float = 0.8,
-    include_validation: bool = True,
-    skeleton: Skeleton = Skeleton()
+    include_validation: bool = True
 ) -> None:
     """
     Generates precomputed assets in the following format:
@@ -145,11 +120,6 @@ def generate_precomputed_assets(
     seg:
         |-- Dir_1
             |-- 0.jpg
-            |-- ...
-        |-- Dir_2
-    pcs:
-        |-- Dir_1
-            |-- 0.ply
             |-- ...
         |-- Dir_2
     validation:
@@ -171,8 +141,6 @@ def generate_precomputed_assets(
     img_dir.mkdir(parents=True, exist_ok=True)
     seg_dir = (Path(output_dir) / 'seg')
     seg_dir.mkdir(parents=True, exist_ok=True)
-    pc_dir = (Path(output_dir) / 'pcs')
-    pc_dir.mkdir(parents=True, exist_ok=True)  # Will make this a directory even if there is only one pc.
 
     # Create metadata file
     img_seq = get_ordered_paths(video_dataset[0])
@@ -242,29 +210,6 @@ def generate_precomputed_assets(
                                     batch_size=batch_size,
                                     batch_dir=batch_dir)
 
-    # Segmentation -> Point Cloud Init
-    print('Running Point Cloud Initalization...')
-    for i in range(num_frames):
-        seg_masks = []
-        for cam_dir in get_ordered_paths(seg_dir):
-            img_path = str(cam_dir / f'{i}.jpg')
-            seg = np.array(Image.open(img_path)) / 255.
-            seg_masks.append(seg)
-        
-        point_cloud = monte_carlo_sample_visible_points(
-            video_extrinsic_matrices,
-            video_intrinsic_matrices,
-            seg_masks,
-            target_points=pc_size,
-            visibility_percentage=pc_visibility
-        )
-        point_cloud_path = str(pc_dir / f'{i}.npy')
-        np.save(point_cloud_path, point_cloud)
-
     if include_validation:
-        point_cloud = np.load(point_cloud_path)
         generate_validation(output_dir,
-                            initial_detections,
-                            video_extrinsic_matrices,
-                            point_cloud,
-                            skeleton)
+                            initial_detections)
