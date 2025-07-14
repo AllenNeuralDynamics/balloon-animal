@@ -1,5 +1,5 @@
 """
-Core Tracking Algorithm. 
+Core Tracking Algorithm.
 
 """
 
@@ -7,9 +7,7 @@ import torch
 from torchvision import transforms
 
 from pathlib import Path
-from collections import defaultdict
 import copy
-import time
 from tqdm import tqdm
 import yaml
 
@@ -45,7 +43,7 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
     """
     assert (list(metadata['extrinsic_matrices'].keys()) ==
             list(metadata['intrinsic_matrices'].keys())), 'metadata must contain same number of extrinsic and intrinsic matrices.'
-    assert all([cam_id in list(metadata['extrinsic_matrices'].keys()) 
+    assert all([cam_id in list(metadata['extrinsic_matrices'].keys())
                 for cam_id in camera_subset]), \
         'Camera subset must be a subset of available cameras.'
 
@@ -72,14 +70,14 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
         # Image is normalized [0, 1]
         # Seg is also normalized [0, 1]
         found_imgs = []
-        img_cam_dir = dataset_path / 'img' / f'camera{cam_id}'
+        img_cam_dir = dataset_path / 'img' / cam_id
         found_imgs.extend(img_cam_dir.glob(f'{t}.jpg'))
         found_imgs.extend(img_cam_dir.glob(f'{t}.png'))
         im = np.array(copy.deepcopy(Image.open(str(found_imgs[0]))))
         im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
 
         found_segs = []
-        seg_cam_dir = dataset_path / 'seg' / f'camera{cam_id}'
+        seg_cam_dir = dataset_path / 'seg' / cam_id
         found_segs.extend(seg_cam_dir.glob(f'{t}.jpg'))
         found_segs.extend(seg_cam_dir.glob(f'{t}.png'))
         seg = np.array(copy.deepcopy(Image.open(str(found_segs[0])))).astype(np.float32)
@@ -93,7 +91,7 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
                         'cam_far_plane': far_plane_z})
     return dataset
 
-def initialize_params(t: int, dataset_path: Path, pc_path: str, metadata: dict, downsample_lvl: int):
+def initialize_params(pc_path: str, metadata: dict, downsample_lvl: int):
     """
     Initalize application params and vars.
     """
@@ -362,8 +360,6 @@ def get_tracking_loss(curr_params, curr_data, local_gaussian_pts):
             'means2D': torch.zeros_like(curr_params['means3D'], requires_grad=True, device="cuda") + 0
         }
         im, radius, depth = Renderer(raster_settings=d['cam'])(**rendervar)
-        near_z = d['cam_near_plane']
-        far_z = d['cam_far_plane']
         base_color_loss += 0.5 * weighted_l2_loss_v2(im, obj_img) + \
                            0.5 * (1.0 - calc_ssim(im, obj_img))
 
@@ -389,8 +385,6 @@ def get_tracking_loss(curr_params, curr_data, local_gaussian_pts):
         }
         im, radius, depth = Renderer(raster_settings=d['cam'])(**rendervar)
 
-        near_z = d['cam_near_plane']
-        far_z = d['cam_far_plane']
         texture_loss += 0.5 * weighted_l2_loss_v2(im, obj_img) + \
                         0.5 * (1.0 - calc_ssim(im, obj_img))
 
@@ -417,7 +411,7 @@ def get_tracking_loss(curr_params, curr_data, local_gaussian_pts):
 # -------
 
 # -------
-# Training Recipe 
+# Training Recipe
 def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, recon_iters):
     """
     Runs reconstruction optimization loop
@@ -425,13 +419,12 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
 
     # Fetch data at current time
     dataset = get_dataset(t, dataset_path, metadata, camera_subset)
-    params, scene_radius = initialize_params(t, dataset_path, pc_path, metadata, downsample_lvl=1)
+    params, scene_radius = initialize_params(pc_path, metadata, downsample_lvl=1)
 
     # Stage 1 Reconstruction
     progress_bar = tqdm(range(recon_iters), desc=f"timestep {t}")
     optimizer = initialize_recon_optimizer(params, scene_radius)
     for i in progress_bar:
-        renders = []
         for d in dataset:
             loss, im, _ = get_recon_loss(params, d)
             loss.backward()
@@ -511,7 +504,7 @@ def reconstruct_timestep(t, dataset_path, pc_path, metadata, camera_subset, reco
 
     params.update({k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
               for k, v in surface_pts.items()})
-    
+
     # Stage 3 Reconstruction: Optimizing color of base gaussians
     progress_bar = tqdm(range(recon_iters), desc=f"timestep {t} stage 3a")
     optimizer_3a = initialize_recon_optimizer_3a(params)
@@ -618,13 +611,13 @@ def track_gaussians(t, curr_params, curr_dataset, scene_radius, local_gaussian_p
     return curr_params
 
 def train(
-    dataset_path: str, 
-    metadata_path: str, 
-    pc_path: str, 
+    dataset_path: str,
+    metadata_path: str,
+    pc_path: str,
     camera_subset: list[str],
-    start_time: int, 
-    num_timesteps: int, 
-    stride: int, 
+    start_time: int,
+    num_timesteps: int,
+    stride: int,
     output_timeseries_path: str
 ):
     """
