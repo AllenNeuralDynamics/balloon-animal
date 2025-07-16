@@ -17,11 +17,14 @@ dependencies = [
     "h5py",
     "huggingface-hub",
     "transformers",
-    "opencv-python", 
+    "opencv-python",
     "plotly",
     "einops",
     "tensorflow",
-    "accelerate"
+    "accelerate",
+    "open3d",
+    "diff-gaussian-rasterization @ git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git",
+    "wandb"
 ]
 
 [project.optional-dependencies]
@@ -31,5 +34,12 @@ dev = [
     "mypy>=1.0.0",
 ]
 
+viz = [
+    rerun-sdk
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["balloon_animal"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

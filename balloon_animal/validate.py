@@ -30,6 +30,7 @@ def measure_track_L2_loss(
     """
     assert tracks.shape == gt_trajectories.shape, \
         "Tracks and ground truth trajectories must have the same shape"
+
     assert len(tracks.shape) == 3, \
         "Tracks must have shape (M, N, 3)."
 
