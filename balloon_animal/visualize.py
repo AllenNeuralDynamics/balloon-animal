@@ -6,13 +6,27 @@ import numpy as np
 import rerun as rr
 import torch
 
+class Skeleton:
+    def __init__(self, points=None, edges=None):
+        self.points = points
+        self.edges = edges
+
 class RerunSession:
-    def __init__(self, ply_files: list[str]):
+    def __init__(self, ply_files: list[str], skeleton_tracks: list[list[Skeleton]] | None):
         """
         Args:
             ply_files (list[str]): Pass in list of ply files to visualize
+            skeleton_tracks (list[list[Skeleton]]): Optional list of SkeletonTracks
         """
+        assert len(ply_files) == len(skeleton_tracks), \
+            print("Number of ply files much match number fo skeleton tracks")
+
+        first_point_track = np.load(ply_files[0])
+        first_skeleton_track = skeleton_tracks[0]
+        assert len(first_point_track['means3D']) == len(first_skeleton_track)
+
         self.ply_files = ply_files
+        self.skeleton_tracks = skeleton_tracks
 
     def visualize(self):
         rr.init('Track Visualization', spawn=True)
@@ -21,9 +35,6 @@ class RerunSession:
             gaussian_timeseries = np.load(ply)
 
             base_means = torch.Tensor(gaussian_timeseries['means3D'])
-            # base_semi_axes = torch.Tensor(np.exp(gaussian_timeseries['log_scales'])* 2)
-            # base_quaternions = torch.Tensor(gaussian_timeseries['unnorm_rotations'])
-
             surface_means = torch.Tensor(gaussian_timeseries['surface_means3D'])
             surface_rgb = torch.Tensor(np.clip(gaussian_timeseries['surface_rgb'], 0, 1))
 
@@ -102,10 +113,68 @@ class RerunSession:
                         )
                     )
 
+            # Plot skeleton if present
+            if self.skeleton_tracks:
+                for i, s in enumerate(self.skeleton_tracks[f]):
+                    rr.set_time_seconds("iteration", (f * len(gaussian_timeseries)) + i)
+                    rr.log(
+                        "pose",
+                        rr.Points3D(
+                            s.points,
+                            keypoint_ids = range(len(s.points))
+                        )
+                    )
+
+                    connections = []
+                    for start_id, end_id in s.edges:
+                        connections.append([s.points[start_id], s.points[end_id]])
+                    rr.log(
+                        "pose/connections",
+                        rr.LineStrips3D(
+                            strips=connections,
+                            colors=np.array([1.0, 0.0, 0.0]),
+                            radii=0.5
+                        )
+                    )
+
+
 if __name__ == '__main__':
     # Example Usage:
     ply_files = [
         "tracks_0_20.npz", "tracks_20_40.npz"
     ]
-    rr_session = RerunSession(ply_files)
+
+    pose_info = ...
+    skeleton_indices = [
+        (0, 1),    # HeadF to HeadB
+        (0, 2),    # HeadF to HeadL
+        (1, 3),    # HeadB to SpineF
+        (2, 3),    # HeadL to SpineF
+        (3, 4),    # SpineF to SpineM
+        (4, 5),    # SpineM to SpineL
+        (5, 8),    # SpineL to HipL
+        (5, 9),    # SpineL to HipR
+        (12, 10),  # ShoulderL to ElbowL
+        (10, 11),  # ElbowL to ArmL
+        (13, 14),  # ShoulderR to ElbowR
+        (14, 15),  # ElbowR to ArmR
+        (3, 12),   # SpineF to ShoulderL
+        (3, 13),   # SpineF to ShoulderR
+        (8, 17),   # HipL to KneeL
+        (17, 18),  # KneeL to ShinL
+        (9, 16),   # HipR to KneeR
+        (16, 19)   # KneeR to ShinR
+    ]
+    skeleton_tracks = []
+    num_frames = 40
+    track_interval = 20
+    for i in range(0, num_frames, track_interval):
+        track = []
+        interval = pose_info[i:i+track_interval]
+        for j in range(track_interval):
+            points = interval[j]
+            track.append(Skeleton(points=points, edges=skeleton_indices))
+        skeleton_tracks.append(track)
+
+    rr_session = RerunSession(ply_files, skeleton_tracks)
     rr_session.visualize()
