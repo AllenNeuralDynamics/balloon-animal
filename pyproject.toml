@@ -35,7 +35,7 @@ dev = [
 ]
 
 viz = [
-    rerun-sdk
+    "rerun-sdk"
 ]
 
 [tool.hatch.build.targets.wheel]
