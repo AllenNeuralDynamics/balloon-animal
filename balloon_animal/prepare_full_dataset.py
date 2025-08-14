@@ -9,43 +9,50 @@ from balloon_animal.precompute_utils import get_ordered_paths, visualize_point_p
 
 def format_camera_yaml(
     dataset_name: str, 
-    camera_width: int,
-    camera_height: int,
     num_cameras: int,
     num_frames: int,
+    camera_widths: dict[str, np.ndarray],
+    camera_heights: dict[str, np.ndarray],
     extrinsic_matrices: dict[str, np.ndarray],
     intrinsic_matrices: dict[str, np.ndarray],
-    output_yaml_path: str
+    camera_offsets: dict[str, np.ndarray],
+    output_yaml_path: str, 
 ):
     """
     Format camera configuration data into YAML file using the yaml library.
     
     Args:
         dataset_name (str): Name of the dataset
-        camera_width (int): Width of camera images
-        camera_height (int): Height of camera images
         num_cameras (int): Number of cameras
         num_frames (int): Number of frames
-        extrinsic_matrices (list[np.ndarray]): List of 4x4 extrinsic matrices
-        intrinsic_matrices (list[np.ndarray]): List of 3x3 intrinsic matrices
+        camera_widths (dict[str, np.ndarray]): Dict mapping camera name to width of camera images (px)
+        camera_heights (dict[str, np.ndarray]): Dict mapping camera name to height of camera images (px)
+        extrinsic_matrices (dict[str, np.ndarray]): Dict mapping camera name to 4x4 extrinsic matrices
+        intrinsic_matrices (dict[str, np.ndarray]): Dict mapping camera name to 3x3 intrinsic matrices
+        camera_offsets (dict[str, np.ndarray]): Dict mapping camera name to size (2,) camera offsets 
         output_yaml_path (str): Path to output YAML file
     """
     
     # Create the data structure using regular dict
     data = {
         'dataset_name': dataset_name,
-        'camera_height': camera_height,
-        'camera_width': camera_width,
+        'camera_heights': camera_heights,
+        'camera_widths': camera_widths,
         'num_cameras': num_cameras,
         'num_frames': num_frames,
         'extrinsic_matrices': {},
-        'intrinsic_matrices': {}
+        'intrinsic_matrices': {}, 
+        'camera_offsets': {}
     }
     
     for name, matrix in extrinsic_matrices.items():
         data['extrinsic_matrices'][name] = matrix.tolist()
+
     for name, matrix in intrinsic_matrices.items():
         data['intrinsic_matrices'][name] = matrix.tolist()
+
+    for name, offset in camera_offsets.items():
+        data['camera_offsets'][name] = offset.tolist()
 
     # Write to YAML file using safe_dump
     with open(output_yaml_path, 'w') as f:
@@ -104,6 +111,7 @@ def generate_precomputed_assets(
     video_dataset: list[str],
     video_extrinsic_matrices: dict[str, np.ndarray],
     video_intrinsic_matrices: dict[str, np.ndarray],
+    camera_offsets: dict[str, np.ndarray],
     output_dir: str,
     prompt: str,
     batch_size: int = 10,  # Low number to prevent CUDA OOM. 
@@ -143,18 +151,27 @@ def generate_precomputed_assets(
     seg_dir.mkdir(parents=True, exist_ok=True)
 
     # Create metadata file
-    img_seq = get_ordered_paths(video_dataset[0])
-    camera_width, camera_height = Image.open(img_seq[0]).size
+    camera_widths = {}
+    camera_heights = {}
+
+    for dataset in video_dataset:
+        img_seq = get_ordered_paths(dataset)
+        camera_width, camera_height = Image.open(img_seq[0]).size
+        camera_widths[dataset.name] = camera_width
+        camera_heights[dataset.name] = camera_height
+
     num_cameras = len(video_dataset)
     num_frames = len(img_seq)
+
     format_camera_yaml(
-        dataset_name=dataset_name, 
-        camera_width=camera_width,
-        camera_height=camera_height,
+        dataset_name=dataset_name,
         num_cameras=num_cameras,
-        num_frames=num_frames,
+        num_frames=num_frames, 
+        camera_widths=camera_widths,
+        camera_heights=camera_heights,
         extrinsic_matrices=video_extrinsic_matrices,
         intrinsic_matrices=video_intrinsic_matrices,
+        camera_offsets=camera_offsets,
         output_yaml_path=str(Path(output_dir) / 'metadata.yml')
     )
 

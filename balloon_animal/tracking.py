@@ -47,9 +47,6 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
                 for cam_id in camera_subset]), \
         'Camera subset must be a subset of available cameras.'
 
-    h = metadata['camera_height']
-    w = metadata['camera_width']
-
     # Calculate focal_pts, scene center to determine far plane of camera frustrum.
     cam_centers = []
     for cam in metadata['extrinsic_matrices'].keys():
@@ -62,6 +59,8 @@ def get_dataset(t: int, dataset_path: Path, metadata: dict, camera_subset: list[
         # far_plane_z is important for gaussian visibility!
         w2c = np.array(metadata['extrinsic_matrices'][cam_id])
         k = np.array(metadata['intrinsic_matrices'][cam_id])
+        h = metadata['camera_heights'][cam_id]
+        w = metadata['camera_widths'][cam_id]
         far_plane_z = np.linalg.norm(scene_center - cam_centers[i]) * 2.
         cam = setup_camera(w, h, k, w2c, near=1.0, far=far_plane_z)
 
